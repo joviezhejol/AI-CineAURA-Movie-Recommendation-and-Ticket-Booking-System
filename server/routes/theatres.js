@@ -3,9 +3,9 @@ const router = express.Router();
 const db = require('../db/database');
 
 // GET /api/theatres/districts
-router.get('/districts', (req, res) => {
+router.get('/districts', async (req, res) => {
   try {
-    const districts = db.prepare('SELECT * FROM districts ORDER BY name ASC').all();
+    const districts = await db.getAll('SELECT * FROM districts ORDER BY name ASC');
     res.json({ districts });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch districts' });
@@ -13,22 +13,23 @@ router.get('/districts', (req, res) => {
 });
 
 // GET /api/theatres
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { district_id } = req.query;
     let query = 'SELECT * FROM theatres';
     const params = [];
 
     if (district_id && district_id !== 'all') {
-      query += ' WHERE district_id = ?';
       params.push(district_id);
+      query += ' WHERE district_id = $1';
     }
 
     query += ' ORDER BY rating DESC';
-    const theatres = db.prepare(query).all(...params);
+    const theatres = await db.getAll(query, params);
 
     const formatted = theatres.map(t => ({
       ...t,
+      rating: Number(t.rating),
       facilities: JSON.parse(t.facilities || '[]')
     }));
 
@@ -39,17 +40,18 @@ router.get('/', (req, res) => {
 });
 
 // GET /api/theatres/:id
-router.get('/:id', (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
-    const theatre = db.prepare('SELECT * FROM theatres WHERE id = ?').get(req.params.id);
+    const theatre = await db.getOne('SELECT * FROM theatres WHERE id = $1', [req.params.id]);
     if (!theatre) return res.status(404).json({ error: 'Theatre not found' });
 
-    const screens = db.prepare('SELECT * FROM screens WHERE theatre_id = ?').all(theatre.id);
-    const district = db.prepare('SELECT * FROM districts WHERE id = ?').get(theatre.district_id);
+    const screens = await db.getAll('SELECT * FROM screens WHERE theatre_id = $1', [theatre.id]);
+    const district = await db.getOne('SELECT * FROM districts WHERE id = $1', [theatre.district_id]);
 
     res.json({
       theatre: {
         ...theatre,
+        rating: Number(theatre.rating),
         district_name: district?.name,
         facilities: JSON.parse(theatre.facilities || '[]'),
         screens

@@ -4,8 +4,7 @@ const db = require('../db/database');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
-
-const JWT_SECRET = process.env.JWT_SECRET || 'cineaura_super_secret_jwt_key_2026';
+const { JWT_SECRET, IS_PRODUCTION } = require('../config/security');
 
 // Middleware to verify JWT token
 function authenticateToken(req, res, next) {
@@ -21,14 +20,15 @@ function authenticateToken(req, res, next) {
 }
 
 // POST /api/auth/register
-router.post('/register', (req, res) => {
+router.post('/register', async (req, res) => {
   try {
     const { name, email, password, phone, district_id = 'chennai' } = req.body;
     if (!name || !email || !password) {
       return res.status(400).json({ error: 'Name, email and password are required' });
     }
 
-    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    const cleanEmail = email.trim().toLowerCase();
+    const existing = await db.getOne('SELECT id FROM users WHERE LOWER(email) = $1', [cleanEmail]);
     if (existing) {
       return res.status(409).json({ error: 'An account with this email already exists' });
     }
@@ -37,16 +37,16 @@ router.post('/register', (req, res) => {
     const hash = bcrypt.hashSync(password, 10);
     const now = Date.now();
 
-    db.prepare(`
+    await db.execute(`
       INSERT INTO users (id, name, email, password_hash, role, phone, district_id, created_at)
-      VALUES (?, ?, ?, ?, 'customer', ?, ?, ?)
-    `).run(userId, name, email, hash, phone || '', district_id, now);
+      VALUES ($1, $2, $3, $4, 'customer', $5, $6, $7)
+    `, [userId, name, cleanEmail, hash, phone || '', district_id, now]);
 
-    const token = jwt.sign({ id: userId, email, role: 'customer', name }, JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ id: userId, email: cleanEmail, role: 'customer', name }, JWT_SECRET, { expiresIn: '7d' });
 
     res.status(201).json({
       success: true,
-      user: { id: userId, name, email, role: 'customer', phone, district_id },
+      user: { id: userId, name, email: cleanEmail, role: 'customer', phone, district_id },
       token
     });
   } catch (err) {
@@ -56,14 +56,15 @@ router.post('/register', (req, res) => {
 });
 
 // POST /api/auth/login
-router.post('/login', (req, res) => {
+router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    const cleanEmail = email.trim().toLowerCase();
+    const user = await db.getOne('SELECT * FROM users WHERE LOWER(email) = $1', [cleanEmail]);
     if (!user) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
@@ -98,9 +99,9 @@ router.post('/login', (req, res) => {
 });
 
 // GET /api/auth/me
-router.get('/me', authenticateToken, (req, res) => {
+router.get('/me', authenticateToken, async (req, res) => {
   try {
-    const user = db.prepare('SELECT id, name, email, role, phone, district_id, created_at FROM users WHERE id = ?').get(req.user.id);
+    const user = await db.getOne('SELECT id, name, email, role, phone, district_id, created_at FROM users WHERE id = $1', [req.user.id]);
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json({ user });
   } catch (err) {
@@ -108,23 +109,40 @@ router.get('/me', authenticateToken, (req, res) => {
   }
 });
 
-// POST /api/auth/switch-role (Convenience 1-click test role switcher)
-router.post('/switch-role', (req, res) => {
+// POST /api/auth/switch-role (Strictly guarded role switcher)
+router.post('/switch-role', async (req, res) => {
   try {
     const { role } = req.body;
     if (!['customer', 'manager', 'employee'].includes(role)) {
       return res.status(400).json({ error: 'Invalid role' });
     }
 
+    // In production, unauthenticated arbitrary role escalation is strictly blocked
+    if (IS_PRODUCTION && role !== 'customer') {
+      const authHeader = req.headers['authorization'];
+      const token = authHeader && authHeader.split(' ')[1];
+      if (!token) {
+        return res.status(403).json({ error: 'Role switching to staff accounts is disabled in production without prior authorization.' });
+      }
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        if (decoded.role !== 'manager' && decoded.role !== role) {
+          return res.status(403).json({ error: 'Insufficient authorization to switch to this role.' });
+        }
+      } catch (err) {
+        return res.status(403).json({ error: 'Invalid authentication credentials.' });
+      }
+    }
+
     const targetEmail = `${role}@cineaura.com`;
-    let user = db.prepare('SELECT * FROM users WHERE email = ?').get(targetEmail);
+    let user = await db.getOne('SELECT * FROM users WHERE LOWER(email) = $1', [targetEmail.toLowerCase()]);
 
     if (!user) {
-      user = db.prepare('SELECT * FROM users WHERE role = ? LIMIT 1').get(role);
+      user = await db.getOne('SELECT * FROM users WHERE role = $1 LIMIT 1', [role]);
     }
 
     if (!user) {
-      return res.status(404).json({ error: `No demo account found for ${role}` });
+      return res.status(404).json({ error: `No account found for ${role}` });
     }
 
     const token = jwt.sign(
@@ -146,14 +164,15 @@ router.post('/switch-role', (req, res) => {
       token
     });
   } catch (err) {
+    console.error('Role Switch Error:', err);
     res.status(500).json({ error: 'Role switch failed' });
   }
 });
 
 // GET /api/auth/notifications
-router.get('/notifications', authenticateToken, (req, res) => {
+router.get('/notifications', authenticateToken, async (req, res) => {
   try {
-    const notifs = db.prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 20').all(req.user.id);
+    const notifs = await db.getAll('SELECT * FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20', [req.user.id]);
     res.json({ notifications: notifs });
   } catch (err) {
     res.status(500).json({ error: 'Failed to load notifications' });

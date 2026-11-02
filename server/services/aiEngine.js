@@ -16,18 +16,18 @@ const TRAVEL_MOODS = [
 ];
 
 // Content-based recommendation algorithm
-function recommendMovies({ mood, vibe, travelMood, language, districtId = 'chennai' }) {
+async function recommendMovies({ mood, vibe, travelMood, language, districtId = 'chennai' }) {
   // Fetch active movies from DB
-  const movies = db.prepare('SELECT * FROM movies WHERE is_active = 1').all();
+  const movies = await db.getAll('SELECT * FROM movies WHERE is_active = 1');
 
   // If districtId is specified, check which movies have active shows in that district
-  const districtShows = db.prepare(`
+  const districtShows = await db.getAll(`
     SELECT DISTINCT s.movie_id
     FROM shows s
     JOIN theatres t ON s.theatre_id = t.id
-    WHERE t.district_id = ? AND s.status = 'ACTIVE'
-  `).all(districtId).map(r => r.movie_id);
-  const districtMovieSet = new Set(districtShows);
+    WHERE t.district_id = $1 AND s.status = 'ACTIVE'
+  `, [districtId]);
+  const districtMovieSet = new Set(districtShows.map(r => r.movie_id));
 
   const scoredMovies = movies.map(movie => {
     let score = 0;
@@ -90,7 +90,7 @@ function recommendMovies({ mood, vibe, travelMood, language, districtId = 'chenn
     }
 
     // 5. Rating weight
-    score += (movie.rating || 7.0) * 2;
+    score += (Number(movie.rating) || 7.0) * 2;
 
     // 6. District availability bonus
     const isShowingLocally = districtMovieSet.has(movie.id);
@@ -98,73 +98,71 @@ function recommendMovies({ mood, vibe, travelMood, language, districtId = 'chenn
       score += 20;
     }
 
-    let explanation = '';
-    if (matchReasons.length > 0) {
-      explanation = `Recommended because it perfectly aligns with your ${matchReasons.join(' + ')}.`;
-    } else {
-      explanation = `Highly rated blockbuster featuring gripping cinematic storytelling.`;
-    }
-
     return {
-      ...movie,
-      genres: movieGenres,
-      cast_members: JSON.parse(movie.cast_members || '[]'),
-      is_showing_in_district: isShowingLocally,
+      movie: {
+        ...movie,
+        rating: Number(movie.rating),
+        genres: movieGenres,
+        secondary_languages: secondaryLangs,
+        mood_tags: movieMoods,
+        vibe_tags: movieVibes,
+        travel_tags: movieTravel,
+        cast_members: JSON.parse(movie.cast_members || '[]'),
+        is_showing_locally: isShowingLocally
+      },
       score,
-      explanation
+      matchReason: matchReasons.length > 0
+        ? `Recommended for your ${matchReasons.join(', ')}.`
+        : 'Popular blockbuster trending in your district.'
     };
   });
 
   // Sort descending by score
   scoredMovies.sort((a, b) => b.score - a.score);
 
-  return scoredMovies;
+  return scoredMovies.slice(0, 6);
 }
 
-// Conversational AI response generator with Mood & Spoiler Protection
-function generateAuraResponse({ userMessage, mood, vibe, travelMood, language, districtId }) {
-  const cleanMsg = (userMessage || '').toLowerCase();
+// Generate empathetic, cinematic response without plot spoilers
+async function generateAuraResponse({ userMessage, mood, vibe, travelMood, language, districtId }) {
+  const recommendations = await recommendMovies({ mood, vibe, travelMood, language, districtId });
+  const topMovie = recommendations[0]?.movie;
 
-  // Mood Protection Detection
-  const sadTriggers = ['sad', 'down', 'depressed', 'crying', 'heartbroken', 'unhappy', 'low'];
-  const isSadIntent = sadTriggers.some(word => cleanMsg.includes(word)) || (mood && mood.toLowerCase() === 'sad');
+  let greeting = 'Hello! I am Aura, your personal CineAura cinema curator. ';
+  let moodNote = '';
 
-  if (isSadIntent && !vibe && !cleanMsg.includes('funny') && !cleanMsg.includes('uplifting') && !cleanMsg.includes('comfort')) {
-    return {
-      reply: "I've got you. ❤️ Sending you warmth. When you're feeling down, would you like something comforting and heartwarming, laugh-out-loud funny, relaxing, or an inspiring adventure?",
-      suggestions: ['Comforting & Uplifting', 'Funny & Laughs', 'Relaxed & Chill', 'Inspiring & Adventurous'],
-      recommendedMovies: recommendMovies({ mood: 'Sad', vibe: 'Feel-good', language, districtId }).slice(0, 3)
-    };
+  if (mood) {
+    if (mood.toLowerCase() === 'sad') {
+      moodNote = "I hear you. Cinema has a wonderful way of offering solace and warmth. I've hand-picked uplifting and heartwarming stories designed to gently brighten your day. ";
+    } else if (mood.toLowerCase() === 'romantic') {
+      moodNote = "Love is in the air! Here are captivating, soulful cinematic journeys that tug at heartstrings. ";
+    } else if (mood.toLowerCase() === 'excited' || mood.toLowerCase() === 'energetic') {
+      moodNote = "Love that high octane energy! Let's dial it up with pulse-pounding, edge-of-your-seat cinematic spectacles! ";
+    } else if (mood.toLowerCase() === 'bored') {
+      moodNote = "Let's banish boredom with mind-bending plots, fast-paced thrillers, and absolute mass entertainment! ";
+    } else {
+      moodNote = `Curating stories that resonate deeply with your ${mood.toLowerCase()} mood. `;
+    }
   }
 
-  // Handle travel query
-  const travelTriggers = ['trip', 'journey', 'travel', 'drive', 'flight', 'outing'];
-  const hasTravelQuery = travelTriggers.some(t => cleanMsg.includes(t)) || travelMood;
-
-  // Perform recommendation search
-  const recs = recommendMovies({
-    mood: mood || (cleanMsg.includes('happy') ? 'Happy' : (cleanMsg.includes('excited') ? 'Excited' : (cleanMsg.includes('scared') ? 'Scared' : null))),
-    vibe: vibe || (cleanMsg.includes('mass') ? 'Mass' : (cleanMsg.includes('feel good') || cleanMsg.includes('feel-good') ? 'Feel-good' : (cleanMsg.includes('chill') ? 'Chill' : null))),
-    travelMood: travelMood || (cleanMsg.includes('night drive') ? 'Night drive' : (cleanMsg.includes('friends') ? 'Friends trip' : (cleanMsg.includes('family') ? 'Family trip' : null))),
-    language,
-    districtId
-  });
-
-  const topMovies = recs.slice(0, 4);
-
-  let reply = '';
-  if (topMovies.length > 0) {
-    const top = topMovies[0];
-    const vibeDesc = vibe ? `${vibe}` : 'cinematic';
-    const travelDesc = travelMood ? ` during your ${travelMood}` : '';
-    reply = `I curated these stories made just for you! Based on your ${vibeDesc} vibe${travelDesc}, you will love **${top.title}** (${top.genres.slice(0, 2).join(', ')}). ${top.explanation} Enjoy completely spoiler-free cinema!`;
-  } else {
-    reply = `I couldn't find a perfect match right now, but here are some popular movies currently thrilling audiences on the big screen!`;
+  let travelNote = '';
+  if (travelMood) {
+    travelNote = `Perfect match for your ${travelMood.toLowerCase()}! `;
   }
+
+  let recommendationSummary = '';
+  if (topMovie) {
+    recommendationSummary = `I strongly suggest experiencing "${topMovie.title}" (${topMovie.language} • ${topMovie.certificate}) — ${topMovie.tagline || topMovie.overview.substring(0, 90) + '...'}`;
+  }
+
+  const aiMessage = `${greeting}${moodNote}${travelNote}${recommendationSummary}`;
 
   return {
-    reply,
-    recommendedMovies: topMovies
+    message: aiMessage,
+    mood,
+    vibe,
+    travelMood,
+    recommendations
   };
 }
 

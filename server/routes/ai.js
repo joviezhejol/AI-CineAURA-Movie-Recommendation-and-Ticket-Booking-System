@@ -3,10 +3,10 @@ const router = express.Router();
 const { MOODS, VIBES, TRAVEL_MOODS, recommendMovies, generateAuraResponse } = require('../services/aiEngine');
 
 // POST /api/ai/chat
-router.post('/chat', (req, res) => {
+router.post('/chat', async (req, res) => {
   try {
     const { message, mood, vibe, travelMood, language, districtId = 'chennai' } = req.body;
-    const response = generateAuraResponse({
+    const response = await generateAuraResponse({
       userMessage: message,
       mood,
       vibe,
@@ -23,10 +23,10 @@ router.post('/chat', (req, res) => {
 });
 
 // GET /api/ai/recommendations
-router.get('/recommendations', (req, res) => {
+router.get('/recommendations', async (req, res) => {
   try {
     const { mood, vibe, travelMood, language, districtId = 'chennai' } = req.query;
-    const recommendations = recommendMovies({ mood, vibe, travelMood, language, districtId });
+    const recommendations = await recommendMovies({ mood, vibe, travelMood, language, districtId });
     res.json({ recommendations });
   } catch (err) {
     res.status(500).json({ error: 'Failed to generate recommendations' });

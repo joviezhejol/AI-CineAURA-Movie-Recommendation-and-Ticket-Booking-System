@@ -4,14 +4,14 @@ const db = require('../db/database');
 const { holdSeats, releaseSeats, sweepExpiredHolds } = require('../services/seatLockService');
 
 // POST /api/holds
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const { showId, seatIds, sessionId, userId } = req.body;
     if (!showId || !sessionId || !Array.isArray(seatIds)) {
       return res.status(400).json({ error: 'Invalid hold parameters' });
     }
 
-    const result = holdSeats(showId, seatIds, sessionId, userId);
+    const result = await holdSeats(showId, seatIds, sessionId, userId);
     if (!result.success) {
       return res.status(409).json(result);
     }
@@ -35,14 +35,14 @@ router.post('/', (req, res) => {
 });
 
 // POST /api/holds/release
-router.post('/release', (req, res) => {
+router.post('/release', async (req, res) => {
   try {
     const { showId, sessionId, seatIds } = req.body;
     if (!showId || !sessionId) {
       return res.status(400).json({ error: 'Missing showId or sessionId' });
     }
 
-    const result = releaseSeats(showId, sessionId, seatIds);
+    const result = await releaseSeats(showId, sessionId, seatIds);
 
     const io = req.app.get('io');
     if (io) {
@@ -61,34 +61,34 @@ router.post('/release', (req, res) => {
 });
 
 // GET /api/holds/active
-router.get('/active', (req, res) => {
+router.get('/active', async (req, res) => {
   try {
     const { showId, sessionId } = req.query;
     if (!showId || !sessionId) {
       return res.status(400).json({ error: 'Missing showId or sessionId' });
     }
 
-    sweepExpiredHolds();
+    await sweepExpiredHolds();
     const now = Date.now();
-    const holds = db.prepare(`
+    const holds = await db.getAll(`
       SELECT sh.*, s.seat_number, s.base_price, s.seat_type, s.seat_tier
       FROM seat_holds sh
       JOIN seats s ON sh.seat_id = s.id
-      WHERE sh.show_id = ? AND sh.session_id = ? AND sh.expires_at > ?
-    `).all(showId, sessionId, now);
+      WHERE sh.show_id = $1 AND sh.session_id = $2 AND sh.expires_at > $3
+    `, [showId, sessionId, now]);
 
     if (holds.length === 0) {
       return res.json({ activeHold: null });
     }
 
-    const expiresAt = holds[0].expires_at;
+    const expiresAt = Number(holds[0].expires_at);
     const remainingSeconds = Math.max(0, Math.floor((expiresAt - now) / 1000));
 
     res.json({
       activeHold: {
         showId,
         sessionId,
-        seats: holds,
+        seats: holds.map(h => ({ ...h, expires_at: Number(h.expires_at), base_price: Number(h.base_price) })),
         expiresAt,
         remainingSeconds
       }

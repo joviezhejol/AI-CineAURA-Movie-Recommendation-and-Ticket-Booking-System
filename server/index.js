@@ -31,7 +31,12 @@ const io = new Server(server, {
 // Attach Socket.IO to express app for routes to access
 app.set('io', io);
 
-app.use(cors());
+// Configure CORS
+app.use(cors({
+  origin: '*',
+  credentials: true
+}));
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -52,6 +57,8 @@ app.get('/api/health', (req, res) => {
     status: 'online',
     app: 'AI CineAura',
     tagline: 'Stories That Made for You',
+    port: process.env.PORT || 5005,
+    nodeEnv: process.env.NODE_ENV || 'development',
     timestamp: new Date().toISOString()
   });
 });
@@ -73,15 +80,15 @@ io.on('connection', (socket) => {
 });
 
 // Periodic background hold cleanup job (every 10 seconds)
-setInterval(() => {
+setInterval(async () => {
   try {
-    const expiredCount = sweepExpiredHolds();
+    const expiredCount = await sweepExpiredHolds();
     if (expiredCount > 0) {
       // Broadcast global event so any open show can re-fetch
       io.emit('holds_expired_sweep', { count: expiredCount });
     }
   } catch (err) {
-    console.error('Hold sweep error:', err);
+    console.error('Hold sweep error:', err.message);
   }
 }, 10000);
 
@@ -91,7 +98,7 @@ app.use(express.static(clientDistPath));
 
 // Fallback for SPA routing in production
 app.use((req, res, next) => {
-  if (req.path.startsWith('/api')) {
+  if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) {
     return next();
   }
   const indexPath = path.join(clientDistPath, 'index.html');
@@ -114,7 +121,6 @@ app.use((req, res, next) => {
 const PORT = process.env.PORT || 5005;
 server.listen(PORT, () => {
   console.log(`🎬 AI CineAura Server running on port ${PORT}`);
-  console.log(`🌐 Open this URL in your browser: http://localhost:${PORT}`);
   console.log(`📍 Districts supported: Chennai, Chengalpattu, Kanchipuram`);
   console.log(`🤖 Aura AI Assistant initialized`);
 });

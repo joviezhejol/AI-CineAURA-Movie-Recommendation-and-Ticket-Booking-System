@@ -4,7 +4,7 @@ const db = require('../db/database');
 const { getShowSeatMap } = require('../services/seatLockService');
 
 // GET /api/shows
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { movie_id, theatre_id, date, district_id } = req.query;
     let query = `
@@ -19,35 +19,36 @@ router.get('/', (req, res) => {
     const params = [];
 
     if (movie_id) {
-      query += ' AND s.movie_id = ?';
       params.push(movie_id);
+      query += ` AND s.movie_id = $${params.length}`;
     }
     if (theatre_id) {
-      query += ' AND s.theatre_id = ?';
       params.push(theatre_id);
+      query += ` AND s.theatre_id = $${params.length}`;
     }
     if (date) {
-      query += ' AND s.show_date = ?';
       params.push(date);
+      query += ` AND s.show_date = $${params.length}`;
     }
     if (district_id && district_id !== 'all') {
-      query += ' AND t.district_id = ?';
       params.push(district_id);
+      query += ` AND t.district_id = $${params.length}`;
     }
 
     query += ' ORDER BY s.show_date ASC, s.start_time ASC';
-    const shows = db.prepare(query).all(...params);
+    const shows = await db.getAll(query, params);
 
     res.json({ shows });
   } catch (err) {
+    console.error('Fetch shows error:', err);
     res.status(500).json({ error: 'Failed to fetch shows' });
   }
 });
 
 // GET /api/shows/:id
-router.get('/:id', (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
-    const show = db.prepare(`
+    const show = await db.getOne(`
       SELECT s.*, m.title as movie_title, m.poster_url as movie_poster, m.backdrop_url as movie_backdrop,
              m.duration_mins, m.certificate as movie_certificate, m.language as movie_language,
              t.name as theatre_name, t.address as theatre_address, t.city as theatre_city, t.district_id,
@@ -56,8 +57,8 @@ router.get('/:id', (req, res) => {
       JOIN movies m ON s.movie_id = m.id
       JOIN theatres t ON s.theatre_id = t.id
       JOIN screens scr ON s.screen_id = scr.id
-      WHERE s.id = ?
-    `).get(req.params.id);
+      WHERE s.id = $1
+    `, [req.params.id]);
 
     if (!show) return res.status(404).json({ error: 'Show not found' });
 
@@ -68,10 +69,10 @@ router.get('/:id', (req, res) => {
 });
 
 // GET /api/shows/:id/seats
-router.get('/:id/seats', (req, res) => {
+router.get('/:id/seats', async (req, res) => {
   try {
     const { session_id } = req.query;
-    const seats = getShowSeatMap(req.params.id, session_id);
+    const seats = await getShowSeatMap(req.params.id, session_id);
     res.json({ seats });
   } catch (err) {
     console.error('Seats fetch error:', err);

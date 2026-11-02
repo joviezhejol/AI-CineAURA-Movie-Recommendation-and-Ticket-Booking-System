@@ -16,6 +16,10 @@ function formatWhatsAppMessage({
   totalAmount,
   qrToken
 }) {
+  const baseUrl = process.env.CLIENT_URL || 'http://localhost:5005';
+  const cleanBase = baseUrl.replace(/\/+$/, '');
+  const ticketUrl = `${cleanBase}/ticket/${qrToken}`;
+
   return `*🎬 AI CINEAURA - TICKET CONFIRMATION*
 ━━━━━━━━━━━━━━━━━━━━
 Hi *${customerName}*, your tickets are confirmed! 🎟️
@@ -25,11 +29,11 @@ Hi *${customerName}*, your tickets are confirmed! 🎟️
 *Screen:* ${screenName}
 *Date & Time:* ${showDate} | ${startTime}
 *Seats:* ${seatNames} (${seatType})
-*Total Paid:* ₹${totalAmount.toFixed(2)}
+*Total Paid:* ₹${Number(totalAmount).toFixed(2)}
 *Booking ID:* ${bookingRef}
 
 📲 *Access your Digital QR Ticket:*
-http://localhost:5173/ticket/${qrToken}
+${ticketUrl}
 
 ⚠️ *Important Cinema Guidelines:*
 • Please arrive 15 minutes before showtime.
@@ -39,17 +43,15 @@ http://localhost:5173/ticket/${qrToken}
 *AI CineAura* — _Stories That Made for You._`;
 }
 
-function sendWhatsAppNotification({ bookingId, phone, messageData }) {
+async function sendWhatsAppNotification({ bookingId, phone, messageData }) {
   const content = formatWhatsAppMessage(messageData);
   const logId = uuidv4();
   const now = Date.now();
 
-  const stmt = db.prepare(`
+  await db.execute(`
     INSERT INTO whatsapp_logs (id, booking_id, phone_number, message_content, status, sent_at)
-    VALUES (?, ?, ?, ?, 'DELIVERED', ?)
-  `);
-
-  stmt.run(logId, bookingId, phone, content, now);
+    VALUES ($1, $2, $3, $4, 'DELIVERED', $5)
+  `, [logId, bookingId, phone, content, now]);
 
   return {
     id: logId,
